@@ -5,3 +5,4 @@ embeddings
 *~ 
 .ipynb_checkpoints/
 .env
+datasets/datasets/wikivoyage-listings-en.csv

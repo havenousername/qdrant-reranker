@@ -1,5 +1,20 @@
 # Qdrant reranking search
 
+## Preparation
+
+Make the dataset script executable and run it:
+
+```bash
+chmod +x ./download_datasets.sh
+./download_datasets.sh
+```
+
+This will download the required datasets.
+
+That’s all. To test the application, navigate to the notebooks directory and execute the notebooks.
+
+## High level overview of the modules
+
 ```md
 project/
 ├── datasets/
@@ -14,6 +29,6 @@ project/
 │   └── search.py                   # search strategies (all three of the reranking approaches)
 ├── notebooks/
 │   ├── 01_reranking.ipynb
-└── presentation/
-    └── slides.md
+│   ├── 02_testing-reranking.ipynb
+
 ```
