@@ -1,0 +1,48 @@
+[project]
+name = "qdrant-interview"
+version = "0.1.0"
+description = "This is qdrant project that has a goal of creating demo for the re-ranking with two different state of art approaches (late interaction model vs cross-encoder)"
+authors = [
+    {name = "havenousername",email = "andrei.cristea997@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "qdrant-client[fastembed] (>=1.17.1,<2.0.0)",
+    "datasets (>=4.8.5,<5.0.0)",
+    "pydantic (>=2.13.3,<3.0.0)",
+    "pandas (>=3.0.2,<4.0.0)",
+    "numpy (>=2.4.4,<3.0.0)",
+    "tqdm (>=4.67.3,<5.0.0)",
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+extraPaths = ["."]
+reportMissingImports = true
+reportMissingModuleSource = false
+exclude = [
+    ".venv",
+    "notebooks", 
+    "**/__pycache__"
+]
+ignore = [
+    ".venv"
+]
+
+[tool.poetry]
+package-mode  = true
+packages = [{ include = 'app' }]
+[dependency-groups]
+dev = [
+    "ipykernel (>=7.2.0,<8.0.0)"
+]
