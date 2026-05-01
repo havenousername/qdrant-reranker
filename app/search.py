@@ -13,7 +13,21 @@ from qdrant_client.conversions.common_types import ScoredPoint
 from qdrant_client.http.models import PointGroup
 from qdrant_client.models import FieldCondition, Filter, MatchValue, Prefetch
 
-from app.models import CollectionVectorType, HierarchyLevel, SearchStrategies
+from app.models import CollectionVectorType, HierarchyLevel, SearchStrategies, WikiCity, WikiPOI
+
+
+def _format_payload(payload: dict | None) -> str:
+    """Dispatch a Qdrant payload to its model and format a one-line summary."""
+    if payload is None:
+        return "<empty payload>"
+    level = payload.get("level")
+    if level == HierarchyLevel.CITY:
+        city = WikiCity.to_model(payload)
+        return f"{city.city}: {city.abstract}"
+    if level == HierarchyLevel.POI:
+        poi = WikiPOI.to_model(payload)
+        return f"{poi.title} in {poi.article} ({poi.type}): {poi.description}"
+    return f"<unknown level={level}>"
 
 
 class SearchParams(BaseModel):
@@ -71,7 +85,12 @@ class SearchStrategy(ABC, Generic[ReturnTypeT, ParamsT]):
         """
         Name of the strategy
         """
-
+    @staticmethod
+    @abstractmethod
+    def to_readable_str(results: list[ReturnTypeT]) -> str:
+        """
+        Get readable string
+        """
 
 class SimpleSearch(SearchStrategy[ScoredPoint, BasicSearchParams]):
     def __init__(
@@ -98,6 +117,12 @@ class SimpleSearch(SearchStrategy[ScoredPoint, BasicSearchParams]):
     def get_name(self) -> SearchStrategies:
         return SearchStrategies.SIMPLE_SEARCH
 
+    @staticmethod
+    def to_readable_str(results: list[ScoredPoint]) -> str:
+        return "\n".join(
+            f"[score={p.score:.4f}] {_format_payload(p.payload)}" for p in results
+        )
+
 
 class ExplorationSearch(SearchStrategy[ScoredPoint, CitySearchParams]):
     def __init__(
@@ -113,19 +138,19 @@ class ExplorationSearch(SearchStrategy[ScoredPoint, CitySearchParams]):
 
     @override
     def search(self, text: str, params: CitySearchParams) -> list[ScoredPoint]:
-        dense_query = list(self._dense_model.embed([text]))[0]
-        colbert_query = list(self._interaction_model.embed([text]))[0]
+        dense_query = list(self._dense_model.embed([text]))[0].tolist()
+        colbert_query = list(self._interaction_model.embed([text]))[0].tolist()
 
         result = self._client.query_points(
             self._collection_name,
             prefetch=Prefetch(
-                query=dense_query[0],
+                query=dense_query,
                 using=str(CollectionVectorType.MAIN_VECTOR),
                 limit=params.prefetch_limit,
                 filter=Filter(
                     must=[
                         FieldCondition(
-                            key="city",
+                            key="article",
                             match=MatchValue(value=params.city),
                         ),
                         FieldCondition(
@@ -145,6 +170,11 @@ class ExplorationSearch(SearchStrategy[ScoredPoint, CitySearchParams]):
     def get_name(self) -> SearchStrategies:
         return SearchStrategies.EXPLORATION_SEARCH
 
+    @staticmethod
+    def to_readable_str(results: list[ScoredPoint]) -> str:
+        return "\n".join(
+            f"[score={p.score:.4f}] {_format_payload(p.payload)}" for p in results
+        )
 
 class BottomUpDiscoverySearch(SearchStrategy[PointGroup, BottomUpDiscoveryParams]):
     def __init__(
@@ -184,6 +214,15 @@ class BottomUpDiscoverySearch(SearchStrategy[PointGroup, BottomUpDiscoveryParams
     @override
     def get_name(self) -> SearchStrategies:
         return SearchStrategies.BOTTOM_UP_DISCOVERY
+
+    @staticmethod
+    def to_readable_str(results: list[PointGroup]) -> str:
+        lines: list[str] = []
+        for group in results:
+            lines.append(f"== {group.id} ==")
+            for hit in group.hits:
+                lines.append(f"  [score={hit.score:.4f}] {_format_payload(hit.payload)}")
+        return "\n".join(lines)
 
 
 class TopDownDiscoverySearch(SearchStrategy[dict[str, Any], TopDownDiscoveryParams]):
@@ -250,6 +289,17 @@ class TopDownDiscoverySearch(SearchStrategy[dict[str, Any], TopDownDiscoveryPara
     def get_name(self) -> SearchStrategies:
         return SearchStrategies.TOP_DOWN_DISCOVERY
 
+    @staticmethod
+    def to_readable_str(results: list[dict[str, Any]]) -> str:
+        lines: list[str] = []
+        for entry in results:
+            city_name = entry["key"]
+            pois: list[ScoredPoint] = entry["value"]
+            lines.append(f"== {city_name} ==")
+            for poi in pois:
+                lines.append(f"  [score={poi.score:.4f}] {_format_payload(poi.payload)}")
+        return "\n".join(lines)
+
 
 class CrossEncodingSearch(SearchStrategy[tuple[ScoredPoint, float], SearchEncoderParams]):
     def __init__(
@@ -298,6 +348,13 @@ class CrossEncodingSearch(SearchStrategy[tuple[ScoredPoint, float], SearchEncode
     def get_name(self) -> SearchStrategies:
         return SearchStrategies.SIMPLE_ENCODING_SEARCH
 
+    @staticmethod
+    def to_readable_str(results: list[tuple[ScoredPoint, float]]) -> str:
+        return "\n".join(
+            f"[rerank={score:.4f} qdrant={p.score:.4f}] {_format_payload(p.payload)}"
+            for p, score in results
+        )
+
 
 _DEFAULT_PARAMS: dict[SearchStrategies, type[SearchParams]] = {
     SearchStrategies.SIMPLE_SEARCH: BasicSearchParams,
@@ -307,6 +364,14 @@ _DEFAULT_PARAMS: dict[SearchStrategies, type[SearchParams]] = {
     SearchStrategies.SIMPLE_ENCODING_SEARCH: SearchEncoderParams,
 }
 
+
+SEARCH_STRATEGIE_CLASSES: dict[SearchStrategies, type[SearchStrategy]] = {
+    SearchStrategies.SIMPLE_SEARCH: SimpleSearch,
+    SearchStrategies.EXPLORATION_SEARCH: ExplorationSearch,
+    SearchStrategies.BOTTOM_UP_DISCOVERY: BottomUpDiscoverySearch,
+    SearchStrategies.TOP_DOWN_DISCOVERY: TopDownDiscoverySearch,
+    SearchStrategies.SIMPLE_ENCODING_SEARCH: CrossEncodingSearch,
+}
 
 class SearchImplementor:
     """

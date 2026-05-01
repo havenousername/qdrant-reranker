@@ -2,7 +2,7 @@
 File that specfies the actual models used by the application
 """
 from enum import StrEnum
-from typing import Generic, Optional, TypedDict, TypeVar
+from typing import Generic, Optional, Protocol, TypedDict, TypeVar
 
 from pydantic import BaseModel
 
@@ -18,7 +18,7 @@ class DatasetSrc(StrEnum):
     Sources of the datasets
     """
     WIKI_VOYAGE_EU = "ashmib/wikivoyage-eu-city-embeddings"
-    LOCAL_VOYAGE_LISTINGS = './datasets/wikivoyage-listings-en.csv'
+    LOCAL_VOYAGE_LISTINGS = 'datasets/wikivoyage-listings-en.csv'
 
 
 class EmbeddingNames(StrEnum):
@@ -54,6 +54,24 @@ class SearchStrategies(StrEnum):
     TOP_DOWN_DISCOVERY = 'top-down-discovery'
     SIMPLE_ENCODING_SEARCH = 'encoding-search'
 
+class DataEntity(Protocol):
+    """
+    Protocol of data that will be injected
+    """
+
+    def to_searchable_text(self) -> str:
+        """
+        Transform to a single texttual representation of structured data
+        """
+        ...
+
+    def to_payload(self) -> dict[str, str | float | int]:
+        """
+        Convert to the dictionary representation of the data model
+        """
+        ...
+
+
 class WikiCity(BaseModel):
     """
     Object that is received from wikivoayage dataset
@@ -73,7 +91,7 @@ class WikiCity(BaseModel):
 
     def to_payload(self) -> dict:
         """
-        transform model to object form 
+        transform model to object form
         """
         return {
             "city": self.city,
@@ -81,8 +99,24 @@ class WikiCity(BaseModel):
             "latitude": self.lat,
             "longitude": self.lng,
             "population": self.population,
+            "abstract": self.abstract,
             "level": HierarchyLevel.CITY,
         }
+
+    @staticmethod
+    def to_model(payload: dict) -> "WikiCity":
+        """
+        Reconstruct a WikiCity from a Qdrant payload (inverse of to_payload).
+        """
+        return WikiCity(
+            city=payload["city"],
+            country=payload["country"],
+            lat=payload["latitude"],
+            lng=payload["longitude"],
+            population=payload["population"],
+            abstract=payload.get("abstract", ""),
+        )
+
 
 class WikiPOI(BaseModel):
     """
@@ -90,8 +124,8 @@ class WikiPOI(BaseModel):
     """
     # Core fields (almost no NaN)
     article: str
-    type: str
-    title: str
+    type: str | None
+    title: str | None
     description: str
     text: str # concatenation of various fields
 
@@ -143,6 +177,14 @@ class WikiPOI(BaseModel):
             **self.model_dump(),
             "level": HierarchyLevel.POI,
         }
+
+    @staticmethod
+    def to_model(payload: dict) -> "WikiPOI":
+        """
+        Reconstruct a WikiPOI from a Qdrant payload (inverse of to_payload).
+        """
+        data = {k: v for k, v in payload.items() if k != "level"}
+        return WikiPOI(**data)
 
 
 DataT = TypeVar("DataT")

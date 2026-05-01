@@ -1,0 +1,10 @@
+query,specificity,facets,intent
+sea and oceans,abstract,single,discover
+romantic dinner with wine and great architecture,moderate,multi,discover
+medieval history and ancient fortifications,moderate,single,discover
+ancient ruins and archaeological sites,specific,single,discover
+cheap hostel with wifi near the train station in Kiel,specific,multi,explore
+relaxing weekend escape with nature and good food,abstract,multi,discover
+extreme sports and adrenaline,moderate,single,discover
+star gazing,abtract,single,discover
+find for me peaceful place where I can party,abstract,multi,discover

@@ -2,19 +2,20 @@
 File that serves or the injection stage
 """
 
-import uuid
 import os
+import uuid
+from collections.abc import Sequence
 from enum import StrEnum
 from itertools import zip_longest
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
-from fastembed.common.types import NumpyArray
 import numpy as np
 from fastembed import LateInteractionTextEmbedding, TextEmbedding
-from tqdm import tqdm
+from fastembed.common.types import NumpyArray
 from numpy.typing import NDArray
 from qdrant_client import QdrantClient
+from qdrant_client.conversions.common_types import UpdateResult
 from qdrant_client.models import (
     CollectionStatus,
     Distance,
@@ -24,8 +25,15 @@ from qdrant_client.models import (
     PointStruct,
     VectorParams,
 )
+from tqdm import tqdm
 
-from app.models import Collections, CollectionVectorType, EmbeddingNames
+from app.models import (
+    Collections,
+    CollectionVectorType,
+    DataEntity,
+    EmbeddingNames,
+    HierarchyLevel,
+)
 
 _NAMESPACE = uuid.UUID("00000000-0000-0000-0000-000000000001")
 _ROOT_PATH = Path(
@@ -42,32 +50,23 @@ class CollectionConfigTypes(StrEnum):
     LATE_INTERACTION = "late-interaction"
 
 
-class DataEntity(Protocol):
-    """
-    Protocol of data that will be injected
-    """
-
-    def to_searchable_text(self) -> str:
-        """
-        Transform to a single texttual representation of structured data
-        """
-        ...
-
-    def to_payload(self) -> dict[str, str | float | int]:
-        """
-        Convert to the dictionary representation of the data model
-        """
-        ...
-
-
 class BatchSequentialEmbedding:
-    def __init__(self, dense_model: TextEmbedding, colbert_model: LateInteractionTextEmbedding | None) -> None:
+    def __init__(
+        self,
+        dense_model: TextEmbedding,
+        colbert_model: LateInteractionTextEmbedding | None,
+    ) -> None:
         self.dense_model = dense_model
         self.colbert_model = colbert_model
         self._parallel = os.cpu_count()
 
-
-    def _embed_in_batches(self, model: TextEmbedding | LateInteractionTextEmbedding, texts: list[str], batch_size: int, desc: str = "Embedding"):
+    def _embed_in_batches(
+        self,
+        model: TextEmbedding | LateInteractionTextEmbedding,
+        texts: list[str],
+        batch_size: int,
+        desc: str = "Embedding",
+    ):
         """Embed texts in batches with progress bar. Returns list of arrays."""
         results: list[NumpyArray] = []
         total = len(texts)
@@ -80,12 +79,23 @@ class BatchSequentialEmbedding:
 
     def embed(self, texts: list[str], batch_size: int):
         """
-        Run dense then ColBERT sequentially. 
+        Run dense then ColBERT sequentially.
         Safer on RAM, use this if parallel version causes memory pressure.
         """
 
-        dense_results = self._embed_in_batches(self.dense_model, texts, desc="Dense embedding", batch_size=batch_size)
-        colbert_results = self._embed_in_batches(self.colbert_model, texts, desc="ColBERT embedding", batch_size=batch_size) if self.colbert_model else []
+        dense_results = self._embed_in_batches(
+            self.dense_model, texts, desc="Dense embedding", batch_size=batch_size
+        )
+        colbert_results = (
+            self._embed_in_batches(
+                self.colbert_model,
+                texts,
+                desc="ColBERT embedding",
+                batch_size=batch_size,
+            )
+            if self.colbert_model
+            else []
+        )
         return dense_results, colbert_results
 
 
@@ -96,7 +106,7 @@ class QdrantInjectCollection:
 
     def __init__(
         self,
-        client_url: str,
+        client: QdrantClient,
         name: Collections,
         *,
         distance: Distance = Distance.COSINE,
@@ -105,7 +115,7 @@ class QdrantInjectCollection:
         interaction_model_name: EmbeddingNames | None = None,
     ) -> None:
         self._name = name
-        self._client = QdrantClient(location=client_url)
+        self._client = client
         self._distance = distance
         self._collection_type = collection_type
         self._created = self._client.collection_exists(name)
@@ -171,10 +181,7 @@ class QdrantInjectCollection:
         self.initialize_embedding_classes()
         if self._created:
             return False
-        collection = self._client.create_collection(
-            self._name,
-            self._vector_config
-        )
+        collection = self._client.create_collection(self._name, self._vector_config)
 
         self._created = True
         return collection
@@ -182,17 +189,19 @@ class QdrantInjectCollection:
     def initialize_embedding_classes(self):
         if self.dense_model is None:
             self.dense_model = TextEmbedding(model_name=self._dense_model_name)
-        if self._collection_type != CollectionConfigTypes.DEFAULT and self.interaction_model is None:
+        if (
+            self._collection_type != CollectionConfigTypes.DEFAULT
+            and self.interaction_model is None
+        ):
             self.interaction_model = LateInteractionTextEmbedding(
                 model_name=self._interaction_model_name
             )
 
-    def _embed_and_save(self, name: str, data: list[DataEntity], batch_size = 256):
+    def _embed_and_save(self, name: str, data: Sequence[DataEntity], batch_size=256):
         if not self.dense_model:
             raise RuntimeError("Should initialize dense model first")
         embedding_strategy = BatchSequentialEmbedding(
-            self.dense_model,
-            self.interaction_model
+            self.dense_model, self.interaction_model
         )
         dense_path = Path(f"{_ROOT_PATH}/embeddings/dense_embeddings_{name}.npy")
         has_late_interaction = (
@@ -202,7 +211,9 @@ class QdrantInjectCollection:
         interaction: NDArray | None = None
         dense: NDArray | None = None
         if has_late_interaction:
-            interaction_path = Path(f"{_ROOT_PATH}/embeddings/interaction_embeddings_{name}.npy")
+            interaction_path = Path(
+                f"{_ROOT_PATH}/embeddings/interaction_embeddings_{name}.npy"
+            )
 
         cache_complete = dense_path.exists() and (
             interaction_path is None or interaction_path.exists()
@@ -228,19 +239,30 @@ class QdrantInjectCollection:
     def _batch_upsert(self, points: list[PointStruct], batch_size: int = 100):
         def batch(iterable, size):
             for i in range(0, len(iterable), size):
-                yield iterable[i:i + size]
-        for batch_points in batch(points, batch_size):
-            self._client.upsert(
-                collection_name=self._name,
-                points=batch_points
-            )
+                yield iterable[i : i + size]
 
-    def upsert_new_elements(self, name: str, data: list[DataEntity]):
+        update_results: list[UpdateResult] = []
+        for batch_points in batch(points, batch_size):
+            update_result = self._client.upsert(
+                collection_name=self._name, points=batch_points
+            )
+            update_results.append(update_result)
+
+        return update_results
+
+    def upsert_new_elements(
+        self,
+        name: HierarchyLevel,
+        data: Sequence[DataEntity],
+        embedding_batch_size: int,
+    ):
         """
         Add new embedded elements to the collection
         """
         self._create()
-        dense_embedding, interaction_embedding = self._embed_and_save(name, data)
+        dense_embedding, interaction_embedding = self._embed_and_save(
+            str(name), data, embedding_batch_size
+        )
         if dense_embedding is None:
             raise ValueError("Dense array embedding cannot be None")
         if (
@@ -268,9 +290,12 @@ class QdrantInjectCollection:
                 payload=doc.to_payload(),
             )
             for doc, dense_el, interaction_el in zip_longest(
-                data, dense_embedding, interaction_embedding or [], fillvalue=None
+                data,
+                dense_embedding,
+                interaction_embedding if interaction_embedding is not None else [],
+                fillvalue=None,
             )
             if doc is not None
         ]
 
-        self._batch_upsert(points)
+        return self._batch_upsert(points)
